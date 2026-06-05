@@ -8,6 +8,92 @@ import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
 import subprocess
 
+class ReloadConflictDialog(tk.Toplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("Reload Batch Conflict")
+        self.geometry("380x160")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+        
+        # Center dialog
+        self.update_idletasks()
+        rx = parent.winfo_x()
+        ry = parent.winfo_y()
+        rw = parent.winfo_width()
+        rh = parent.winfo_height()
+        w = self.winfo_width()
+        h = self.winfo_height()
+        x = rx + (rw - w) // 2
+        y = ry + (rh - h) // 2
+        self.geometry(f"+{x}+{y}")
+        
+        self.configure(bg="#f8fafc")
+        self.result = None  # 'append' (Overwrite/Add), 'replace', or None
+        
+        lbl = tk.Label(
+            self,
+            text="Active dispatch table is not empty.\nChoose how to load the history batch:",
+            font=("Segoe UI", 10, "bold"),
+            bg="#f8fafc",
+            fg="#0f172a",
+            pady=15
+        )
+        lbl.pack()
+        
+        btn_frame = tk.Frame(self, bg="#f8fafc")
+        btn_frame.pack(fill=tk.X, pady=10)
+        
+        # 'Overwrite' maps to append (adding to the current selected items)
+        btn_add = tk.Button(
+            btn_frame,
+            text="Overwrite (Add)",
+            font=("Segoe UI", 9, "bold"),
+            bg="#0ea5e9",
+            fg="#ffffff",
+            activebackground="#0284c7",
+            activeforeground="#ffffff",
+            bd=0,
+            cursor="hand2",
+            padx=12,
+            pady=6,
+            command=self.on_add
+        )
+        btn_add.pack(side=tk.LEFT, padx=(30, 10), expand=True)
+        
+        # 'Replace' maps to replacing current selected items entirely
+        btn_replace = tk.Button(
+            btn_frame,
+            text="Replace Current",
+            font=("Segoe UI", 9, "bold"),
+            bg="#ef4444",
+            fg="#ffffff",
+            activebackground="#b91c1c",
+            activeforeground="#ffffff",
+            bd=0,
+            cursor="hand2",
+            padx=12,
+            pady=6,
+            command=self.on_replace
+        )
+        btn_replace.pack(side=tk.LEFT, padx=(10, 30), expand=True)
+        
+        # Bind close window to cancel
+        self.protocol("WM_DELETE_WINDOW", self.on_cancel)
+        
+    def on_add(self):
+        self.result = 'append'
+        self.destroy()
+        
+    def on_replace(self):
+        self.result = 'replace'
+        self.destroy()
+        
+    def on_cancel(self):
+        self.result = None
+        self.destroy()
+
 class AutocompleteDropdown:
     def __init__(self, entry, get_suggestions_func, on_select_callback):
         self.entry = entry
@@ -175,6 +261,9 @@ class BodegaStockOutApp:
         # Select and show default Tab
         self.active_tab = None
         self.switch_tab("dispatch")
+        
+        # Restore recent session if unsaved items exist (deferred to avoid focus issues)
+        self.root.after(100, self.check_and_restore_session)
         
     def configure_styles(self):
         """Sets up a modern, custom flat theme for ttk widgets using standard Tkinter."""
@@ -1074,8 +1163,10 @@ class BodegaStockOutApp:
         self.hist_tree.tag_configure("even", background="#ffffff")
         self.hist_tree.tag_configure("odd", background="#f8fafc")
         
-        # Bind history click
+        # Bind history click and right click context menu
         self.hist_tree.bind("<<TreeviewSelect>>", self.on_history_select)
+        self.hist_tree.bind("<Button-3>", self.on_hist_tree_right_click)
+        self.hist_tree.bind("<Button-2>", self.on_hist_tree_right_click)
         self.hist_tree.bind("<Button-1>", lambda e: self.handle_tree_deselect(e, self.hist_tree), add="+")
         
         # Actions at the bottom of left history panel
@@ -1246,6 +1337,84 @@ class BodegaStockOutApp:
         self.btn_save_settings.pack(fill=tk.X)
         self.setup_hover_effect(self.btn_save_settings, "#0ea5e9", "#0284c7")
 
+        # Database Cleanup Card
+        cleanup_card = tk.LabelFrame(
+            content_frame, 
+            text="  Database Compacting & Cleanup Tools  ", 
+            font=("Segoe UI", 11, "bold"),
+            fg="#475569", 
+            bg="#ffffff", 
+            bd=1, 
+            relief="solid", 
+            padx=25, 
+            pady=25
+        )
+        cleanup_card.pack(fill=tk.X, anchor="n", pady=(20, 0))
+        
+        lbl_cleanup_desc = tk.Label(
+            cleanup_card,
+            text="Maintenance tools to keep your local database lightweight and fast over years of operation.",
+            font=("Segoe UI", 9, "italic"),
+            fg="#64748b",
+            bg="#ffffff"
+        )
+        lbl_cleanup_desc.pack(anchor="w", pady=(0, 15))
+        
+        # Grid/row frame for cleanup actions
+        actions_frame = tk.Frame(cleanup_card, bg="#ffffff")
+        actions_frame.pack(fill=tk.X)
+        
+        self.btn_vacuum = tk.Button(
+            actions_frame,
+            text="🧹 Compact Database (Vacuum)",
+            font=("Segoe UI", 10, "bold"),
+            bg="#0ea5e9", 
+            fg="#ffffff",
+            activebackground="#0284c7",
+            activeforeground="#ffffff",
+            bd=0,
+            cursor="hand2",
+            command=self.vacuum_db,
+            padx=15,
+            pady=8
+        )
+        self.btn_vacuum.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
+        self.setup_hover_effect(self.btn_vacuum, "#0ea5e9", "#0284c7")
+        
+        self.btn_purge_90 = tk.Button(
+            actions_frame,
+            text="🗑️ Purge Logs > 90 Days",
+            font=("Segoe UI", 10, "bold"),
+            bg="#ef4444", 
+            fg="#ffffff",
+            activebackground="#b91c1c",
+            activeforeground="#ffffff",
+            bd=0,
+            cursor="hand2",
+            command=lambda: self.purge_logs(90),
+            padx=15,
+            pady=8
+        )
+        self.btn_purge_90.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 8))
+        self.setup_hover_effect(self.btn_purge_90, "#ef4444", "#b91c1c")
+        
+        self.btn_purge_180 = tk.Button(
+            actions_frame,
+            text="🗑️ Purge Logs > 6 Months",
+            font=("Segoe UI", 10, "bold"),
+            bg="#ef4444", 
+            fg="#ffffff",
+            activebackground="#b91c1c",
+            activeforeground="#ffffff",
+            bd=0,
+            cursor="hand2",
+            command=lambda: self.purge_logs(180),
+            padx=15,
+            pady=8
+        )
+        self.btn_purge_180.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
+        self.setup_hover_effect(self.btn_purge_180, "#ef4444", "#b91c1c")
+
     def save_settings(self):
         """Saves Title & Description config variables to database, and updates header banner in real-time."""
         title = self.settings_title_var.get().strip()
@@ -1275,6 +1444,74 @@ class BodegaStockOutApp:
             messagebox.showinfo("Success", "System configuration saved successfully!")
         except Exception as e:
             messagebox.showerror("Save Error", f"Unable to save settings:\n{str(e)}")
+        finally:
+            conn.close()
+
+    def vacuum_db(self):
+        """Compacts the SQLite database file to reclaim unused space."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute("VACUUM")
+            conn.commit()
+            messagebox.showinfo("Success", "Database compacted and optimized successfully!")
+            self.status_lbl.config(text="Database vacuum completed.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to compact database:\n{str(e)}")
+        finally:
+            conn.close()
+            
+    def purge_logs(self, days):
+        """Purges history logs older than the specified number of days."""
+        confirm = messagebox.askyesno(
+            "Purge Old Logs?",
+            f"Are you sure you want to permanently delete all history logs older than {days} days?\n"
+            "This action is irreversible.",
+            parent=self.root
+        )
+        if not confirm:
+            return
+            
+        cutoff_date = datetime.datetime.now() - datetime.timedelta(days=days)
+        
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT ref_id, timestamp FROM history")
+            rows = cursor.fetchall()
+            
+            to_delete = []
+            for ref_id, timestamp_str in rows:
+                parsed_dt = None
+                for fmt in ("%Y-%m-%d %I:%M:%S %p", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+                    try:
+                        parsed_dt = datetime.datetime.strptime(timestamp_str, fmt)
+                        break
+                    except ValueError:
+                        continue
+                if parsed_dt and parsed_dt < cutoff_date:
+                    to_delete.append(ref_id)
+            
+            if to_delete:
+                for ref_id in to_delete:
+                    cursor.execute("DELETE FROM history WHERE ref_id = ?", (ref_id,))
+                conn.commit()
+                
+                # Compact database after deletion
+                cursor.execute("VACUUM")
+                conn.commit()
+                
+                deleted_count = len(to_delete)
+            else:
+                deleted_count = 0
+                
+            # Refresh history list UI
+            self.load_history_from_db()
+            self.refresh_history_list()
+            
+            messagebox.showinfo("Success", f"Successfully deleted {deleted_count} logs older than {days} days.")
+            self.status_lbl.config(text=f"Purged {deleted_count} logs older than {days} days.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to purge logs:\n{str(e)}")
         finally:
             conn.close()
 
@@ -1315,6 +1552,55 @@ class BodegaStockOutApp:
         if not item:
             tree.selection_remove(*tree.selection())
         
+    def save_active_session(self):
+        """Persists the current active dispatch session items to the database."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            items_json = json.dumps(self.dispatch_items)
+            cursor.execute("INSERT OR REPLACE INTO config (key, value) VALUES ('active_dispatch_batch', ?)", (items_json,))
+            conn.commit()
+        except Exception:
+            pass
+        finally:
+            conn.close()
+
+    def check_and_restore_session(self):
+        """Checks if there is a persistent active session in the database and prompts to restore it."""
+        conn = sqlite3.connect(self.db_path)
+        saved_items = []
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT value FROM config WHERE key = 'active_dispatch_batch'")
+            row = cursor.fetchone()
+            if row and row[0]:
+                saved_items = json.loads(row[0])
+        except Exception:
+            pass
+        finally:
+            conn.close()
+            
+        if saved_items:
+            # Prompt to restore recent session
+            restore = messagebox.askyesno(
+                "Restore Recent Session",
+                f"We found an unsaved stock-out batch from your previous session with {len(saved_items)} item(s).\n"
+                "Would you like to restore it?",
+                parent=self.root
+            )
+            if restore:
+                self.dispatch_items = saved_items
+                self.refresh_dispatch_tree()
+                self.status_lbl.config(text=f"Restored {len(self.dispatch_items)} items from previous session.")
+            else:
+                # User declined, clear it from database
+                self.dispatch_items = []
+                self.refresh_dispatch_tree()
+                self.save_active_session()
+            
+            # Explicitly force focus back to item entry to make sure all entry inputs are focusable/interactive
+            self.item_name_entry.focus_set()
+
     # ========================================================
     # SQLite DATABASE PERSISTENCE LAYER
     # ========================================================
@@ -1436,9 +1722,13 @@ class BodegaStockOutApp:
     def filter_quick_products(self, *args):
         """Filters the quick-adder catalog sidebar in Dispatch view."""
         search_term = self.quick_search_var.get().lower()
+        search_words = search_term.split()
         self.quick_tree.delete(*self.quick_tree.get_children())
         
-        matches = [prod for prod in self.products if search_term in prod.lower()]
+        if search_words:
+            matches = [prod for prod in self.products if all(word in prod.lower() for word in search_words)]
+        else:
+            matches = list(self.products)
         
         idx = 0
         for prod in matches:
@@ -1453,9 +1743,14 @@ class BodegaStockOutApp:
     def filter_inventory_list(self, *args):
         """Filters the master catalog manager treeview list."""
         search_term = self.inv_search_var.get().lower()
+        search_words = search_term.split()
         self.inv_tree.delete(*self.inv_tree.get_children())
         
-        matches = [prod for prod in self.products if search_term in prod.lower()]
+        if search_words:
+            matches = [prod for prod in self.products if all(word in prod.lower() for word in search_words)]
+        else:
+            matches = list(self.products)
+            
         total_matches = len(matches)
         
         idx = 0
@@ -1647,7 +1942,7 @@ class BodegaStockOutApp:
     # TAB 1: STOCK-OUT DISPATCH INTERACTIVE BUSINESS LOGIC
     # ========================================================
     def quick_select_click(self):
-        """Fills item name from catalog selection, locks it readonly, and moves focus to quantity field."""
+        """Fills item name from catalog selection and moves focus to quantity field."""
         selected = self.quick_tree.selection()
         if not selected:
             self.item_name_entry.config(state=tk.NORMAL)
@@ -1656,24 +1951,20 @@ class BodegaStockOutApp:
             self.status_lbl.config(text="Ready. Operating fully offline.")
             return
         prod_name = self.quick_tree.item(selected[0], 'values')[0]
-        # Unlock briefly to set value, then lock to readonly
         self.item_name_entry.config(state=tk.NORMAL)
         self.item_name_var.set(prod_name)
-        self.item_name_entry.config(state="readonly")
         self.status_lbl.config(text=f"Selected: '{prod_name}' — enter quantity and press Enter to add.")
         self.qty_var.set("")
         self.qty_entry.focus_set()
 
     def quick_add_double_click(self):
-        """Double-click fills item name from catalog and locks it — user must enter qty then press Enter."""
+        """Double-click fills item name from catalog — user must enter qty then press Enter."""
         selected = self.quick_tree.selection()
         if not selected:
             return
         prod_name = self.quick_tree.item(selected[0], 'values')[0]
-        # Same as single-click: fill name, lock readonly, focus quantity
         self.item_name_entry.config(state=tk.NORMAL)
         self.item_name_var.set(prod_name)
-        self.item_name_entry.config(state="readonly")
         self.status_lbl.config(text=f"Selected: '{prod_name}' — enter quantity and press Enter to add.")
         self.qty_var.set("")
         self.qty_entry.focus_set()
@@ -1702,6 +1993,7 @@ class BodegaStockOutApp:
                 idx += 1
                 
         self.update_item_count()
+        self.save_active_session()
             
     def add_item(self):
         """Performs validation and adds a new item to the active session list."""
@@ -1996,6 +2288,18 @@ class BodegaStockOutApp:
             self.status_lbl.config(text="Current batch wiped clean.")
             self.item_name_entry.focus_set()
             
+    def format_header_date(self, date_val):
+        if isinstance(date_val, datetime.datetime):
+            return f"{date_val.strftime('%b')}. {date_val.day} {date_val.year}"
+        if isinstance(date_val, str):
+            for fmt in ("%Y-%m-%d %I:%M:%S %p", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+                try:
+                    dt = datetime.datetime.strptime(date_val, fmt)
+                    return f"{dt.strftime('%b')}. {dt.day} {dt.year}"
+                except ValueError:
+                    continue
+        return date_val
+
     def format_receipt_text(self, date_str, items_data, total_qty, ref_id, paper_size="Long",
                             header_title=None, show_date=True, show_ref_id=True, font_size=10):
         """
@@ -2030,7 +2334,7 @@ class BodegaStockOutApp:
 
         # Dynamic lines capacity based on selected font size and Long paper height (936 pt)
         line_height_points = font_size * 1.35
-        header_overhead_lines = 8  # Title, Date, Ref ID, spaces, and table headers
+        header_overhead_lines = 10  # 2 spaces at top, Title, Date, Ref ID, spaces, and table headers
         
         # Non-last page capacity: safe zone is very small (only needs to clear page number at bottom)
         # We reserve margins (30 pt) and small footer zone (1.5 lines of text)
@@ -2096,9 +2400,12 @@ class BodegaStockOutApp:
             right_col = page_items[mid:]
             
             lines = []
+            lines.append("")
+            lines.append("")
             lines.append(title_text.center(96))
             if show_date:
-                lines.append(f"Date: {date_str}".center(96))
+                formatted_date = self.format_header_date(date_str)
+                lines.append(f"Date: {formatted_date}".center(96))
             if show_ref_id:
                 lines.append(f"Ref ID: {ref_id}".center(96))
             lines.append("")
@@ -2561,7 +2868,7 @@ Add-Type -AssemblyName System.Drawing
 $doc = New-Object System.Drawing.Printing.PrintDocument
 {printer_setting}
 {paper_size_setting}
-$doc.DefaultPageSettings.Margins.Top = 30
+$doc.DefaultPageSettings.Margins.Top = 60
 $doc.DefaultPageSettings.Margins.Bottom = 70
 $doc.DefaultPageSettings.Margins.Left = 30
 $doc.DefaultPageSettings.Margins.Right = 30
@@ -2575,8 +2882,8 @@ $doc.add_PrintPage({{
     param($sender, $e)
     $g  = $e.Graphics
     $pb = $e.PageBounds
-    # Margin bounds matching margins (30 top/left/right, 70 bottom)
-    $topY    = 30.0
+    # Margin bounds matching margins (60 top/left/right, 70 bottom)
+    $topY    = 60.0
     $bottomY = [float]($pb.Height - 70)
     $leftX   = 30.0
     $rightX  = [float]($pb.Width  - 30)
@@ -2955,6 +3262,71 @@ $doc.Print()
             self.load_history_from_db()
             self.refresh_history_list()
             self.status_lbl.config(text=f"Deleted history record {ref_id}.")
+
+    def on_hist_tree_right_click(self, event):
+        """Displays a context menu on right-click to reload selected batch items."""
+        item_id = self.hist_tree.identify_row(event.y)
+        if not item_id:
+            return
+            
+        self.hist_tree.selection_set(item_id)
+        
+        # Create context menu
+        menu = tk.Menu(self.root, tearoff=0)
+        menu.add_command(label="Reload into Dispatch", command=self.reload_selected_history)
+        menu.post(event.x_root, event.y_root)
+
+    def reload_selected_history(self):
+        selected = self.hist_tree.selection()
+        if not selected:
+            return
+            
+        ref_id = self.hist_tree.item(selected[0], 'values')[1]
+        
+        # Find history record
+        record = None
+        for r in self.history:
+            if r["ref_id"] == ref_id:
+                record = r
+                break
+                
+        if not record:
+            return
+            
+        # Confirm reloading (if there are already items in dispatch, warn/ask user with choices)
+        action = 'replace'
+        if self.dispatch_items:
+            dialog = ReloadConflictDialog(self.root)
+            self.root.wait_window(dialog)
+            if dialog.result is None:
+                return  # Cancelled
+            action = dialog.result
+                
+        # Load / merge items
+        if action == 'replace':
+            self.dispatch_items = []
+            
+        for item in record["items"]:
+            h_name = item["name"]
+            h_qty = int(item["qty"])
+            
+            # Check duplicate to sum quantities when appending
+            found = False
+            for disp_item in self.dispatch_items:
+                if disp_item["desc"].lower() == h_name.lower():
+                    disp_item["qty"] += h_qty
+                    found = True
+                    break
+            if not found:
+                self.dispatch_items.append({
+                    "desc": h_name,
+                    "qty": h_qty
+                })
+            
+        # Switch tab to dispatch
+        self.switch_tab("dispatch")
+        self.refresh_dispatch_tree()
+        self.status_lbl.config(text=f"Reloaded {len(self.dispatch_items)} items from history ref: {ref_id}.")
 
     def reprint_history_record(self):
         """Reprints standard physical A4 paper print slip matching the selected historical text file."""
