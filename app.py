@@ -2338,11 +2338,11 @@ class BodegaStockOutApp:
         
         # Non-last page capacity: safe zone is very small (only needs to clear page number at bottom)
         # We reserve margins (30 pt) and small footer zone (1.5 lines of text)
-        normal_lines_capacity = int((936.0 - (line_height_points * 1.5 + 30.0)) / line_height_points) - header_overhead_lines
+        normal_lines_capacity = int((936.0 - (line_height_points * 1.5 + 20.0)) / line_height_points) - header_overhead_lines
         
         # Last page capacity: safe zone is larger (needs to reserve space for the signature block)
         # We reserve margins (60 pt) and signatures zone (6 lines of signature + space = ~80 pt)
-        last_lines_capacity = int((936.0 - (line_height_points * 6.5 + 90.0)) / line_height_points) - header_overhead_lines
+        last_lines_capacity = int((936.0 - (line_height_points * 3.5 + 40.0)) / line_height_points) - header_overhead_lines
         
         # Paginate items dynamically based on wrapped sub-rows count
         pages_data = []
@@ -2959,20 +2959,14 @@ $doc.add_PrintPage({{
     $pageY     = $pb.Height - 35
     $g.DrawString($pageLabel, $smallFont, [System.Drawing.Brushes]::Black, $pageX, $pageY)
     
-    # Align signatures (moved slightly higher and made larger, drawn only on last page)
-    if ($script:pageIndex -eq ($totalPages - 1)) {{
-        $sigFont   = New-Object System.Drawing.Font("Consolas", [float]($fontSize * 1.15))
-        $sigY      = $currentY + 30
-        $maxSigY   = $bottomY - $charHeight - 35
-        if ($sigY -gt $maxSigY) {{
-            $sigY = $maxSigY
-        }}
-        $g.DrawString("Received by: ____________________", $sigFont, [System.Drawing.Brushes]::Black, $leftX, $sigY)
-        
-        $checkedStr  = "Checked by: ____________________"
-        $checkedSize = $g.MeasureString($checkedStr, $sigFont)
-        $g.DrawString($checkedStr, $sigFont, [System.Drawing.Brushes]::Black, ($rightX - $checkedSize.Width), $sigY)
-    }}
+    # Align signatures (moved slightly higher and made larger)
+    $sigFont   = New-Object System.Drawing.Font("Consolas", [float]($fontSize * 1.15))
+    $sigY      = $bottomY - $charHeight - 35
+    $g.DrawString("Received by: ____________________", $sigFont, [System.Drawing.Brushes]::Black, $leftX, $sigY)
+    
+    $checkedStr  = "Checked by: ____________________"
+    $checkedSize = $g.MeasureString($checkedStr, $sigFont)
+    $g.DrawString($checkedStr, $sigFont, [System.Drawing.Brushes]::Black, ($rightX - $checkedSize.Width), $sigY)
     
     $script:pageIndex++
     $e.HasMorePages = ($script:pageIndex -lt $totalPages)
