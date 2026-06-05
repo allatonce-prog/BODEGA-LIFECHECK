@@ -2959,14 +2959,20 @@ $doc.add_PrintPage({{
     $pageY     = $pb.Height - 35
     $g.DrawString($pageLabel, $smallFont, [System.Drawing.Brushes]::Black, $pageX, $pageY)
     
-    # Align signatures (moved slightly higher and made larger)
-    $sigFont   = New-Object System.Drawing.Font("Consolas", [float]($fontSize * 1.15))
-    $sigY      = $bottomY - $charHeight - 35
-    $g.DrawString("Received by: ____________________", $sigFont, [System.Drawing.Brushes]::Black, $leftX, $sigY)
-    
-    $checkedStr  = "Checked by: ____________________"
-    $checkedSize = $g.MeasureString($checkedStr, $sigFont)
-    $g.DrawString($checkedStr, $sigFont, [System.Drawing.Brushes]::Black, ($rightX - $checkedSize.Width), $sigY)
+    # Align signatures (moved slightly higher and made larger, drawn only on last page)
+    if ($script:pageIndex -eq ($totalPages - 1)) {{
+        $sigFont   = New-Object System.Drawing.Font("Consolas", [float]($fontSize * 1.15))
+        $sigY      = $currentY + 30
+        $maxSigY   = $bottomY - $charHeight - 35
+        if ($sigY -gt $maxSigY) {{
+            $sigY = $maxSigY
+        }}
+        $g.DrawString("Received by: ____________________", $sigFont, [System.Drawing.Brushes]::Black, $leftX, $sigY)
+        
+        $checkedStr  = "Checked by: ____________________"
+        $checkedSize = $g.MeasureString($checkedStr, $sigFont)
+        $g.DrawString($checkedStr, $sigFont, [System.Drawing.Brushes]::Black, ($rightX - $checkedSize.Width), $sigY)
+    }}
     
     $script:pageIndex++
     $e.HasMorePages = ($script:pageIndex -lt $totalPages)
