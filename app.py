@@ -2943,10 +2943,13 @@ $doc.add_PrintPage({{
     # Align the table starting below the sub-header lines, left-aligned close to the side
     $x = $leftX
     $tableY = $subY + ($subCharHeight * 2.5) + 10
-    $tableRect = New-Object System.Drawing.RectangleF($x, $tableY, ($rightX - $x), ($bottomY - $bottomZone - $tableY))
-    $sfTable = New-Object System.Drawing.StringFormat
-    $sfTable.Trimming = [System.Drawing.StringTrimming]::None
-    $g.DrawString($tableText, $font, [System.Drawing.Brushes]::Black, $tableRect, $sfTable)
+    $tableLinesArray = $tableText -split "`r?`n"
+    $currentY = $tableY
+    $lineHeight = $font.GetHeight($g) * 0.92
+    foreach ($line in $tableLinesArray) {
+        $g.DrawString($line, $font, [System.Drawing.Brushes]::Black, $leftX, $currentY)
+        $currentY += $lineHeight
+    }
     
     # Pinned page number centered at the very bottom, using a smaller font
     $pageLabel = "Page $($script:pageIndex + 1) of $totalPages"
