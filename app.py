@@ -2946,10 +2946,10 @@ $doc.add_PrintPage({{
     $tableLinesArray = $tableText -split "`r?`n"
     $currentY = $tableY
     $lineHeight = $font.GetHeight($g) * 0.92
-    foreach ($line in $tableLinesArray) {
+    foreach ($line in $tableLinesArray) {{
         $g.DrawString($line, $font, [System.Drawing.Brushes]::Black, $leftX, $currentY)
         $currentY += $lineHeight
-    }
+    }}
     
     # Pinned page number centered at the very bottom, using a smaller font
     $pageLabel = "Page $($script:pageIndex + 1) of $totalPages"
