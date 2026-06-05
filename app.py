@@ -460,68 +460,68 @@ class BodegaStockOutApp:
         )
         lbl_qhelp.pack(fill=tk.X, pady=(8, 0))
         
-        # Dev test panel (for testing print output - hidden/commented out)
-        # dev_frame = tk.Frame(self.quick_catalog_panel, bg="#ffffff")
-        # dev_frame.pack(fill=tk.X, pady=(10, 0))
-        # 
-        # lbl_dev = tk.Label(
-        #     dev_frame,
-        #     text="🧪 DEV TOOLS (Test Print scaling):",
-        #     font=("Segoe UI", 7, "bold"),
-        #     fg="#ef4444",
-        #     bg="#ffffff"
-        # )
-        # lbl_dev.pack(anchor="w", pady=(0, 2))
-        # 
-        # # Row 1 of buttons
-        # row1_frame = tk.Frame(dev_frame, bg="#ffffff")
-        # row1_frame.pack(fill=tk.X, pady=(2, 2))
-        # 
-        # btn_dev50 = tk.Button(
-        #     row1_frame,
-        #     text="Load 50 Items",
-        #     font=("Segoe UI", 8, "bold"),
-        #     bg="#f1f5f9",
-        #     fg="#475569",
-        #     activebackground="#e2e8f0",
-        #     bd=1,
-        #     relief="solid",
-        #     cursor="hand2",
-        #     command=lambda: self.populate_test_items(50)
-        # )
-        # btn_dev50.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
-        # 
-        # btn_dev100 = tk.Button(
-        #     row1_frame,
-        #     text="Load 100 Items",
-        #     font=("Segoe UI", 8, "bold"),
-        #     bg="#f1f5f9",
-        #     fg="#475569",
-        #     activebackground="#e2e8f0",
-        #     bd=1,
-        #     relief="solid",
-        #     cursor="hand2",
-        #     command=lambda: self.populate_test_items(100)
-        # )
-        # btn_dev100.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(2, 0))
-        # 
-        # # Row 2 of buttons
-        # row2_frame = tk.Frame(dev_frame, bg="#ffffff")
-        # row2_frame.pack(fill=tk.X, pady=(2, 0))
-        # 
-        # btn_append100 = tk.Button(
-        #     row2_frame,
-        #     text="+100 Items (Append)",
-        #     font=("Segoe UI", 8, "bold"),
-        #     bg="#f1f5f9",
-        #     fg="#10b981",
-        #     activebackground="#e2e8f0",
-        #     bd=1,
-        #     relief="solid",
-        #     cursor="hand2",
-        #     command=lambda: self.append_test_items(100)
-        # )
-        # btn_append100.pack(fill=tk.X)
+        # Dev test panel (for testing print output)
+        dev_frame = tk.Frame(self.quick_catalog_panel, bg="#ffffff")
+        dev_frame.pack(fill=tk.X, pady=(10, 0))
+        
+        lbl_dev = tk.Label(
+            dev_frame,
+            text="🧪 DEV TOOLS (Test Print scaling):",
+            font=("Segoe UI", 7, "bold"),
+            fg="#ef4444",
+            bg="#ffffff"
+        )
+        lbl_dev.pack(anchor="w", pady=(0, 2))
+        
+        # Row 1 of buttons
+        row1_frame = tk.Frame(dev_frame, bg="#ffffff")
+        row1_frame.pack(fill=tk.X, pady=(2, 2))
+        
+        btn_dev50 = tk.Button(
+            row1_frame,
+            text="Load 50 Items",
+            font=("Segoe UI", 8, "bold"),
+            bg="#f1f5f9",
+            fg="#475569",
+            activebackground="#e2e8f0",
+            bd=1,
+            relief="solid",
+            cursor="hand2",
+            command=lambda: self.populate_test_items(50)
+        )
+        btn_dev50.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
+        
+        btn_dev100 = tk.Button(
+            row1_frame,
+            text="Load 100 Items",
+            font=("Segoe UI", 8, "bold"),
+            bg="#f1f5f9",
+            fg="#475569",
+            activebackground="#e2e8f0",
+            bd=1,
+            relief="solid",
+            cursor="hand2",
+            command=lambda: self.populate_test_items(100)
+        )
+        btn_dev100.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(2, 0))
+        
+        # Row 2 of buttons
+        row2_frame = tk.Frame(dev_frame, bg="#ffffff")
+        row2_frame.pack(fill=tk.X, pady=(2, 0))
+        
+        btn_append100 = tk.Button(
+            row2_frame,
+            text="+100 Items (Append)",
+            font=("Segoe UI", 8, "bold"),
+            bg="#f1f5f9",
+            fg="#10b981",
+            activebackground="#e2e8f0",
+            bd=1,
+            relief="solid",
+            cursor="hand2",
+            command=lambda: self.append_test_items(100)
+        )
+        btn_append100.pack(fill=tk.X)
         
         # ========================================================
         # COLUMN 2: Manual Data Entry & Actions (Middle)
@@ -2033,8 +2033,8 @@ class BodegaStockOutApp:
         header_overhead_lines = 8  # Title, Date, Ref ID, spaces, and table headers
         
         # Non-last page capacity: safe zone is very small (only needs to clear page number at bottom)
-        # We reserve margins (60 pt) and small footer zone (2 lines of text = ~27 pt)
-        normal_lines_capacity = int((936.0 - (line_height_points * 2.0 + 80.0)) / line_height_points) - header_overhead_lines
+        # We reserve margins (30 pt) and small footer zone (1.5 lines of text)
+        normal_lines_capacity = int((936.0 - (line_height_points * 1.5 + 30.0)) / line_height_points) - header_overhead_lines
         
         # Last page capacity: safe zone is larger (needs to reserve space for the signature block)
         # We reserve margins (60 pt) and signatures zone (6 lines of signature + space = ~80 pt)
@@ -2106,7 +2106,7 @@ class BodegaStockOutApp:
             # Excel style grid table headers (QTY first, then ITEM) - 2 columns side-by-side with solid Unicode lines
             # Each table: 45 chars, Gap: 6 chars. Total width = 45 + 6 + 45 = 96 characters
             lines.append("┌─────┬─────────────────────────────────────┐      ┌─────┬─────────────────────────────────────┐")
-            lines.append("│ QTY │ ITEM                                │      │ QTY │ ITEM                                │")
+            lines.append("│ QTY │" + "ITEM".center(37) + "│      │ QTY │" + "ITEM".center(37) + "│")
             lines.append("├─────┼─────────────────────────────────────┤      ├─────┼─────────────────────────────────────┤")
             
             max_rows = max(len(left_col), len(right_col))
@@ -2610,20 +2610,32 @@ $doc.add_PrintPage({{
         }}
     }}
     $cleanHeaderLines = $headerLines | ForEach-Object {{ $_.Trim() }}
-    $headerText = $cleanHeaderLines -join "`n"
-    $tableText  = $tableLines -join "`n"
+    $titleLines    = $cleanHeaderLines | Where-Object {{ $_ -notmatch '^Date:' -and $_ -notmatch '^Ref ID:' }}
+    $subHeaderLines = $cleanHeaderLines | Where-Object {{ $_ -match '^Date:' -or $_ -match '^Ref ID:' }}
+    $titleText     = $titleLines -join "`n"
+    $subHeaderText = $subHeaderLines -join "`n"
+    $tableText     = $tableLines -join "`n"
     
-    # Draw header text centered to the entire paper page width (15pt Bold)
+    # Draw title (15pt Bold) centered
     $headerFont = New-Object System.Drawing.Font("Consolas", 15, [System.Drawing.FontStyle]::Bold)
     $headerCharHeight = ($g.MeasureString("A", $headerFont)).Height
-    $headerRect = New-Object System.Drawing.RectangleF(0, $topY, $pb.Width, ($headerCharHeight * 3.5))
     $sfHeader = New-Object System.Drawing.StringFormat
     $sfHeader.Alignment = [System.Drawing.StringAlignment]::Center
-    $g.DrawString($headerText, $headerFont, [System.Drawing.Brushes]::Black, $headerRect, $sfHeader)
+    $titleRect = New-Object System.Drawing.RectangleF(0, $topY, $pb.Width, ($headerCharHeight * 1.5))
+    $g.DrawString($titleText, $headerFont, [System.Drawing.Brushes]::Black, $titleRect, $sfHeader)
     
-    # Align the table starting below the bold header lines, left-aligned close to the side
+    # Draw date/ref ID (11pt Regular) centered, below the title
+    $subFont = New-Object System.Drawing.Font("Consolas", 11, [System.Drawing.FontStyle]::Regular)
+    $subCharHeight = ($g.MeasureString("A", $subFont)).Height
+    $subY = $topY + ($headerCharHeight * 1.5) + 4
+    $sfSub = New-Object System.Drawing.StringFormat
+    $sfSub.Alignment = [System.Drawing.StringAlignment]::Center
+    $subRect = New-Object System.Drawing.RectangleF(0, $subY, $pb.Width, ($subCharHeight * 2.5))
+    $g.DrawString($subHeaderText, $subFont, [System.Drawing.Brushes]::Black, $subRect, $sfSub)
+    
+    # Align the table starting below the sub-header lines, left-aligned close to the side
     $x = $leftX
-    $tableY = $topY + ($headerCharHeight * 3.5) + 10
+    $tableY = $subY + ($subCharHeight * 2.5) + 10
     $tableRect = New-Object System.Drawing.RectangleF($x, $tableY, ($rightX - $x), ($bottomY - $bottomZone - $tableY))
     $sfTable = New-Object System.Drawing.StringFormat
     $sfTable.Trimming = [System.Drawing.StringTrimming]::None
@@ -2740,7 +2752,7 @@ $doc.Print()
         # Time generation
         now = datetime.datetime.now()
         timestamp_file = now.strftime("%Y%m%d_%H%M%S")
-        timestamp_display = now.strftime("%Y-%m-%d %H:%M:%S")
+        timestamp_display = now.strftime("%Y-%m-%d %I:%M:%S %p")
         
         # Generate sequential LIFECHECK ref_id
         conn = sqlite3.connect(self.db_path)
