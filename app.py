@@ -1659,10 +1659,41 @@ class BodegaStockOutApp:
         finally:
             conn.close()
 
+    def migrate_timestamps_to_24h(self):
+        """Converts any 12-hour format timestamps in the database to standard 24-hour format for correct chronological sorting."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT ref_id, timestamp FROM history")
+            rows = cursor.fetchall()
+            
+            updates = []
+            for ref_id, ts_str in rows:
+                parsed_dt = None
+                # Check if it is in 12-hour format first
+                try:
+                    parsed_dt = datetime.datetime.strptime(ts_str, "%Y-%m-%d %I:%M:%S %p")
+                except ValueError:
+                    # Already in 24h format or something else
+                    continue
+                
+                if parsed_dt:
+                    new_ts = parsed_dt.strftime("%Y-%m-%d %H:%M:%S")
+                    updates.append((new_ts, ref_id))
+            
+            if updates:
+                cursor.executemany("UPDATE history SET timestamp = ? WHERE ref_id = ?", updates)
+                conn.commit()
+        except Exception:
+            pass
+        finally:
+            conn.close()
+
     def load_data(self):
         """Initializes SQLite databases, runs file wipe routines, and populates lists."""
         self.init_db()
         self.load_settings()
+        self.migrate_timestamps_to_24h()
         
         # Wipes old JSON file references completely to fulfill "remove all the data"
         for old_file in [self.products_file, self.history_file]:
@@ -1904,10 +1935,11 @@ class BodegaStockOutApp:
             
         for idx, record in enumerate(filtered_records):
             tag = "even" if idx % 2 == 0 else "odd"
+            display_ts = self.format_display_timestamp(record["timestamp"])
             self.hist_tree.insert(
                 "", 
                 tk.END, 
-                values=(record["timestamp"], record["ref_id"], record["total_qty"]),
+                values=(display_ts, record["ref_id"], record["total_qty"]),
                 tags=(tag,)
             )
             
@@ -2300,6 +2332,15 @@ class BodegaStockOutApp:
                     continue
         return date_val
 
+    def format_display_timestamp(self, ts_str):
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %I:%M:%S %p", "%Y-%m-%d"):
+            try:
+                dt = datetime.datetime.strptime(ts_str, fmt)
+                return f"{dt.strftime('%b')} {dt.day}, {dt.year} {dt.strftime('%I:%M:%S %p')}"
+            except ValueError:
+                continue
+        return ts_str
+
     def format_receipt_text(self, date_str, items_data, total_qty, ref_id, paper_size="Long",
                             header_title=None, show_date=True, show_ref_id=True, font_size=10):
         """
@@ -2338,11 +2379,11 @@ class BodegaStockOutApp:
         
         # Non-last page capacity: safe zone is very small (only needs to clear page number at bottom)
         # We reserve margins (30 pt) and small footer zone (1.5 lines of text)
-        normal_lines_capacity = int((936.0 - (line_height_points * 1.5 + 20.0)) / line_height_points) - header_overhead_lines
+        normal_lines_capacity = int((936.0 - (line_height_points * 1.5 + 10.0)) / line_height_points) - header_overhead_lines
         
         # Last page capacity: safe zone is larger (needs to reserve space for the signature block)
         # We reserve margins (60 pt) and signatures zone (6 lines of signature + space = ~80 pt)
-        last_lines_capacity = int((936.0 - (line_height_points * 3.5 + 40.0)) / line_height_points) - header_overhead_lines
+        last_lines_capacity = int((936.0 - (line_height_points * 2.0 + 15.0)) / line_height_points) - header_overhead_lines
         
         # Paginate items dynamically based on wrapped sub-rows count
         pages_data = []
@@ -2447,6 +2488,8 @@ class BodegaStockOutApp:
                     lines.append(f"{left_cell}      {right_cell}")
                 
             lines.append("└─────┴─────────────────────────────────────┘      └─────┴─────────────────────────────────────┘")
+            if is_last_page:
+                lines.append(f"TOTAL ITEMS: {len(items_data)}".rjust(96))
             
             # Pad with empty lines to push the signatures and page number to the bottom
             num_content_lines = len(lines)
@@ -3062,7 +3105,7 @@ $doc.Print()
         # Time generation
         now = datetime.datetime.now()
         timestamp_file = now.strftime("%Y%m%d_%H%M%S")
-        timestamp_display = now.strftime("%Y-%m-%d %I:%M:%S %p")
+        timestamp_display = now.strftime("%Y-%m-%d %H:%M:%S")
         
         # Generate sequential LIFECHECK ref_id
         conn = sqlite3.connect(self.db_path)
