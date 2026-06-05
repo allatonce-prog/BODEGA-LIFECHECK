@@ -3,14 +3,128 @@ import sys
 import datetime
 import json
 import sqlite3
+import math
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
 import subprocess
 
+class AutocompleteDropdown:
+    def __init__(self, entry, get_suggestions_func, on_select_callback):
+        self.entry = entry
+        self.get_suggestions_func = get_suggestions_func
+        self.on_select_callback = on_select_callback
+        self.dropdown = None
+        self.listbox = None
+        
+        # Bindings on the entry widget
+        self.entry.bind("<KeyRelease>", self.on_key_release)
+        self.entry.bind("<FocusOut>", self.on_focus_out)
+        self.entry.bind("<Down>", self.on_arrow_down)
+        
+    def on_key_release(self, event):
+        if event.keysym in ("Up", "Down", "Return", "Escape", "Tab"):
+            return
+        self.show_dropdown()
+        
+    def show_dropdown(self):
+        query = self.entry.get().strip()
+        if not query:
+            self.hide_dropdown()
+            return
+            
+        suggestions = self.get_suggestions_func(query)
+        if not suggestions:
+            self.hide_dropdown()
+            return
+            
+        if not self.dropdown:
+            self.dropdown = tk.Toplevel(self.entry.winfo_toplevel())
+            self.dropdown.wm_overrideredirect(True)
+            
+            # Listbox container to allow styling border
+            container = tk.Frame(self.dropdown, bg="#cbd5e1", bd=1)
+            container.pack(fill=tk.BOTH, expand=True)
+            
+            # Add scrollbar for larger matches list
+            scrollbar = ttk.Scrollbar(container, orient=tk.VERTICAL)
+            scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            
+            self.listbox = tk.Listbox(
+                container,
+                font=self.entry.cget("font"),
+                bg="#ffffff",
+                fg="#0f172a",
+                selectbackground="#0ea5e9",
+                selectforeground="#ffffff",
+                bd=0,
+                highlightthickness=0,
+                yscrollcommand=scrollbar.set
+            )
+            self.listbox.pack(fill=tk.BOTH, expand=True)
+            scrollbar.config(command=self.listbox.yview)
+            
+            self.listbox.bind("<ButtonRelease-1>", self.on_click_select)
+            self.listbox.bind("<Return>", self.on_enter_select)
+            self.listbox.bind("<Escape>", lambda e: self.hide_dropdown())
+            
+        # Update content
+        self.listbox.delete(0, tk.END)
+        for s in suggestions[:12]:  # Limit to top 12 suggestions for compact display
+            self.listbox.insert(tk.END, s)
+            
+        # Position dropdown right below the entry widget
+        self.entry.update_idletasks()
+        x = self.entry.winfo_rootx()
+        y = self.entry.winfo_rooty() + self.entry.winfo_height()
+        w = self.entry.winfo_width()
+        
+        # Calculate dynamic height based on item count
+        item_count = min(12, len(suggestions))
+        h = item_count * 22 + 4 # approx 22px per item + 4px padding
+        self.dropdown.wm_geometry(f"{w}x{h}+{x}+{y}")
+        self.dropdown.deiconify()
+        self.dropdown.lift()
+        
+    def hide_dropdown(self):
+        if self.dropdown:
+            try:
+                self.dropdown.destroy()
+            except Exception:
+                pass
+            self.dropdown = None
+            self.listbox = None
+            
+    def on_focus_out(self, event):
+        # Small delay allows mouse click events to register on listbox before destruction
+        self.entry.after(180, self.hide_dropdown)
+        
+    def on_arrow_down(self, event):
+        if self.listbox and self.dropdown:
+            self.listbox.focus_set()
+            self.listbox.selection_clear(0, tk.END)
+            self.listbox.selection_set(0)
+            self.listbox.activate(0)
+            
+    def on_click_select(self, event):
+        if self.listbox:
+            sel = self.listbox.curselection()
+            if sel:
+                val = self.listbox.get(sel[0])
+                self.on_select_callback(val)
+            self.hide_dropdown()
+            
+    def on_enter_select(self, event):
+        if self.listbox:
+            sel = self.listbox.curselection()
+            if sel:
+                val = self.listbox.get(sel[0])
+                self.on_select_callback(val)
+            self.hide_dropdown()
+
 class BodegaStockOutApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("STOCKOUT\")
+        self.root.title("STOCKOUT")
         self.root.geometry("960x680")  # Comfortable width for the 3-column layout
         self.root.minsize(920, 580)
         
@@ -20,6 +134,7 @@ class BodegaStockOutApp:
         self.db_path = "bodega.db"
         self.products = []
         self.history = []
+        self.dispatch_items = []
         self.load_data()
         
         # Configure overall themes and styles
@@ -43,6 +158,7 @@ class BodegaStockOutApp:
         self.create_dispatch_tab()
         self.create_inventory_tab()
         self.create_history_tab()
+        self.create_settings_tab()
         
         # 4. Sticky Footer Status Bar at the bottom
         self.create_footer_status()
@@ -54,14 +170,10 @@ class BodegaStockOutApp:
         self.root.bind("<Control-Key-1>", lambda e: self.switch_tab("dispatch"))
         self.root.bind("<Control-Key-2>", lambda e: self.switch_tab("inventory"))
         self.root.bind("<Control-Key-3>", lambda e: self.switch_tab("history"))
+        self.root.bind("<Control-Key-4>", lambda e: self.switch_tab("settings"))
         
         # Select and show default Tab
         self.active_tab = None
-        
-        # Debounce timer IDs for search inputs
-        self._quick_search_debounce_id = None
-        self._inv_search_debounce_id = None
-        
         self.switch_tab("dispatch")
         
     def configure_styles(self):
@@ -127,26 +239,26 @@ class BodegaStockOutApp:
         title_frame.pack(side=tk.LEFT, fill=tk.Y, expand=True, anchor="w")
         
         # Main title label
-        title_lbl = tk.Label(
+        self.title_lbl = tk.Label(
             title_frame, 
-            text="BODEGA STOCK-OUT SYSTEM", 
+            text=self.system_title, 
             font=("Segoe UI", 16, "bold"), 
             fg="#f8fafc", 
             bg="#0f172a",
             anchor="w"
         )
-        title_lbl.pack(anchor="w", pady=(15, 2))
+        self.title_lbl.pack(anchor="w", pady=(15, 2))
         
         # Modern subtle subtitle
-        subtitle_lbl = tk.Label(
+        self.subtitle_lbl = tk.Label(
             title_frame, 
-            text="Offline Session Dispatch & Paper Receipt Formatter", 
+            text=self.system_description, 
             font=("Segoe UI", 9), 
             fg="#94a3b8", 
             bg="#0f172a",
             anchor="w"
         )
-        subtitle_lbl.pack(anchor="w")
+        self.subtitle_lbl.pack(anchor="w")
 
         # Session indicator bubble
         indicator_frame = tk.Frame(banner, bg="#1e293b", padx=15, pady=8, bd=0)
@@ -169,7 +281,7 @@ class BodegaStockOutApp:
         
         self.tabs = {}
         
-        # Build 3 navigation tabs
+        # Build 4 navigation tabs
         self.tabs["dispatch"] = self.create_nav_tab_button(
             self.nav_frame, "📤 Stock-Out Dispatch", "dispatch", lambda: self.switch_tab("dispatch")
         )
@@ -178,6 +290,9 @@ class BodegaStockOutApp:
         )
         self.tabs["history"] = self.create_nav_tab_button(
             self.nav_frame, "📜 Stock-Out History", "history", lambda: self.switch_tab("history")
+        )
+        self.tabs["settings"] = self.create_nav_tab_button(
+            self.nav_frame, "⚙️ Settings", "settings", lambda: self.switch_tab("settings")
         )
         
     def create_nav_tab_button(self, parent, text, tab_name, select_command):
@@ -218,6 +333,7 @@ class BodegaStockOutApp:
         self.dispatch_frame.pack_forget()
         self.inventory_frame.pack_forget()
         self.history_frame.pack_forget()
+        self.settings_frame.pack_forget()
         
         # Reset all nav buttons and indicators
         for name, tab_widgets in self.tabs.items():
@@ -244,6 +360,9 @@ class BodegaStockOutApp:
             self.history_frame.pack(fill=tk.BOTH, expand=True)
             self.status_lbl.config(text="Browse or reprint past stock-out dispatch sheets.")
             self.refresh_history_list()
+        elif target_tab == "settings":
+            self.settings_frame.pack(fill=tk.BOTH, expand=True)
+            self.status_lbl.config(text="Configure app Title and Subtitle Description settings.")
             
         self.active_tab = target_tab
         
@@ -298,7 +417,7 @@ class BodegaStockOutApp:
             highlightcolor="#0ea5e9"
         )
         self.quick_search_entry.pack(fill=tk.X, pady=(0, 8), ipady=3)
-        self.quick_search_var.trace_add("write", self._debounce_quick_search)
+        self.quick_search_var.trace_add("write", self.filter_quick_products)
         
         # Products treeview container
         quick_tree_container = tk.Frame(self.quick_catalog_panel, bg="#cbd5e1", bd=1, relief="solid")
@@ -340,6 +459,69 @@ class BodegaStockOutApp:
             justify=tk.LEFT
         )
         lbl_qhelp.pack(fill=tk.X, pady=(8, 0))
+        
+        # Dev test panel (for testing print output - hidden/commented out)
+        # dev_frame = tk.Frame(self.quick_catalog_panel, bg="#ffffff")
+        # dev_frame.pack(fill=tk.X, pady=(10, 0))
+        # 
+        # lbl_dev = tk.Label(
+        #     dev_frame,
+        #     text="🧪 DEV TOOLS (Test Print scaling):",
+        #     font=("Segoe UI", 7, "bold"),
+        #     fg="#ef4444",
+        #     bg="#ffffff"
+        # )
+        # lbl_dev.pack(anchor="w", pady=(0, 2))
+        # 
+        # # Row 1 of buttons
+        # row1_frame = tk.Frame(dev_frame, bg="#ffffff")
+        # row1_frame.pack(fill=tk.X, pady=(2, 2))
+        # 
+        # btn_dev50 = tk.Button(
+        #     row1_frame,
+        #     text="Load 50 Items",
+        #     font=("Segoe UI", 8, "bold"),
+        #     bg="#f1f5f9",
+        #     fg="#475569",
+        #     activebackground="#e2e8f0",
+        #     bd=1,
+        #     relief="solid",
+        #     cursor="hand2",
+        #     command=lambda: self.populate_test_items(50)
+        # )
+        # btn_dev50.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
+        # 
+        # btn_dev100 = tk.Button(
+        #     row1_frame,
+        #     text="Load 100 Items",
+        #     font=("Segoe UI", 8, "bold"),
+        #     bg="#f1f5f9",
+        #     fg="#475569",
+        #     activebackground="#e2e8f0",
+        #     bd=1,
+        #     relief="solid",
+        #     cursor="hand2",
+        #     command=lambda: self.populate_test_items(100)
+        # )
+        # btn_dev100.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(2, 0))
+        # 
+        # # Row 2 of buttons
+        # row2_frame = tk.Frame(dev_frame, bg="#ffffff")
+        # row2_frame.pack(fill=tk.X, pady=(2, 0))
+        # 
+        # btn_append100 = tk.Button(
+        #     row2_frame,
+        #     text="+100 Items (Append)",
+        #     font=("Segoe UI", 8, "bold"),
+        #     bg="#f1f5f9",
+        #     fg="#10b981",
+        #     activebackground="#e2e8f0",
+        #     bd=1,
+        #     relief="solid",
+        #     cursor="hand2",
+        #     command=lambda: self.append_test_items(100)
+        # )
+        # btn_append100.pack(fill=tk.X)
         
         # ========================================================
         # COLUMN 2: Manual Data Entry & Actions (Middle)
@@ -385,6 +567,21 @@ class BodegaStockOutApp:
             highlightcolor="#0ea5e9"
         )
         self.item_name_entry.pack(fill=tk.X, pady=(0, 8), ipady=3)
+        
+        # Wire up Autocomplete Dropdown suggestions from product catalog
+        def get_suggestions(query):
+            q = query.lower()
+            return [prod for prod in self.products if q in prod.lower()]
+            
+        def on_select_autocomplete(val):
+            self.item_name_var.set(val)
+            self.qty_entry.focus_set()
+            
+        self.autocomplete = AutocompleteDropdown(
+            self.item_name_entry, 
+            get_suggestions_func=get_suggestions, 
+            on_select_callback=on_select_autocomplete
+        )
         
         lbl_qty = tk.Label(
             entry_card, 
@@ -504,6 +701,36 @@ class BodegaStockOutApp:
             pady=2
         )
         self.count_lbl.pack(side=tk.RIGHT)
+        
+        # Real-time Batch Search Bar
+        search_batch_frame = tk.Frame(self.right_panel, bg="#ffffff", bd=1, relief="solid", padx=10, pady=6)
+        search_batch_frame.pack(fill=tk.X, pady=(0, 8))
+        
+        lbl_batch_search = tk.Label(
+            search_batch_frame,
+            text="🔍 Search Batch:",
+            font=("Segoe UI", 9, "bold"),
+            fg="#475569",
+            bg="#ffffff"
+        )
+        lbl_batch_search.pack(side=tk.LEFT, padx=(0, 8))
+        
+        self.batch_search_var = tk.StringVar()
+        self.batch_search_entry = tk.Entry(
+            search_batch_frame,
+            textvariable=self.batch_search_var,
+            font=("Segoe UI", 10),
+            bg="#f8fafc",
+            fg="#0f172a",
+            insertbackground="#0f172a",
+            bd=1,
+            relief="solid",
+            highlightthickness=1,
+            highlightbackground="#cbd5e1",
+            highlightcolor="#0ea5e9"
+        )
+        self.batch_search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=3)
+        self.batch_search_var.trace_add("write", lambda *args: self.refresh_dispatch_tree())
         
         table_container = tk.Frame(
             self.right_panel, 
@@ -697,7 +924,7 @@ class BodegaStockOutApp:
             highlightcolor="#6366f1"
         )
         self.inv_search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=3)
-        self.inv_search_var.trace_add("write", self._debounce_inv_search)
+        self.inv_search_var.trace_add("write", self.filter_inventory_list)
         
         # Catalog Treeview table
         tree_container = tk.Frame(right_p, bg="#cbd5e1", bd=1, relief="solid")
@@ -928,6 +1155,129 @@ class BodegaStockOutApp:
         self.btn_reprint.config(state=tk.DISABLED, bg="#94a3b8")
         self.btn_del_hist.config(state=tk.DISABLED, fg="#94a3b8")
 
+    def create_settings_tab(self):
+        """Creates the Settings tab frame to configure system Title and Subtitle Description."""
+        self.settings_frame = tk.Frame(self.tab_container, bg="#f8fafc")
+        
+        content_frame = tk.Frame(self.settings_frame, bg="#f8fafc", padx=40, pady=30)
+        content_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Settings Card
+        settings_card = tk.LabelFrame(
+            content_frame, 
+            text="  System Banner Configurations  ", 
+            font=("Segoe UI", 11, "bold"),
+            fg="#475569", 
+            bg="#ffffff", 
+            bd=1, 
+            relief="solid", 
+            padx=25, 
+            pady=25
+        )
+        settings_card.pack(fill=tk.X, anchor="n")
+        
+        # Title Label & Entry
+        lbl_title = tk.Label(
+            settings_card, 
+            text="Header System Title", 
+            font=("Segoe UI", 10, "bold"),
+            fg="#64748b", 
+            bg="#ffffff"
+        )
+        lbl_title.pack(anchor="w", pady=(5, 3))
+        
+        self.settings_title_var = tk.StringVar(value=self.system_title)
+        self.settings_title_entry = tk.Entry(
+            settings_card, 
+            textvariable=self.settings_title_var,
+            font=("Segoe UI", 11),
+            bg="#f8fafc", 
+            fg="#0f172a", 
+            insertbackground="#0f172a",
+            bd=1, 
+            relief="solid",
+            highlightthickness=1,
+            highlightbackground="#cbd5e1",
+            highlightcolor="#0ea5e9"
+        )
+        self.settings_title_entry.pack(fill=tk.X, pady=(0, 20), ipady=5)
+        
+        # Description Label & Entry
+        lbl_desc = tk.Label(
+            settings_card, 
+            text="Header Subtitle Description", 
+            font=("Segoe UI", 10, "bold"),
+            fg="#64748b", 
+            bg="#ffffff"
+        )
+        lbl_desc.pack(anchor="w", pady=(5, 3))
+        
+        self.settings_desc_var = tk.StringVar(value=self.system_description)
+        self.settings_desc_entry = tk.Entry(
+            settings_card, 
+            textvariable=self.settings_desc_var,
+            font=("Segoe UI", 11),
+            bg="#f8fafc", 
+            fg="#0f172a", 
+            insertbackground="#0f172a",
+            bd=1, 
+            relief="solid",
+            highlightthickness=1,
+            highlightbackground="#cbd5e1",
+            highlightcolor="#0ea5e9"
+        )
+        self.settings_desc_entry.pack(fill=tk.X, pady=(0, 25), ipady=5)
+        
+        # Save Settings Button
+        self.btn_save_settings = tk.Button(
+            settings_card,
+            text="💾 Save Configurations",
+            font=("Segoe UI", 11, "bold"),
+            bg="#0ea5e9", 
+            fg="#ffffff",
+            activebackground="#0284c7",
+            activeforeground="#ffffff",
+            bd=0,
+            cursor="hand2",
+            command=self.save_settings,
+            padx=20,
+            pady=10
+        )
+        self.btn_save_settings.pack(fill=tk.X)
+        self.setup_hover_effect(self.btn_save_settings, "#0ea5e9", "#0284c7")
+
+    def save_settings(self):
+        """Saves Title & Description config variables to database, and updates header banner in real-time."""
+        title = self.settings_title_var.get().strip()
+        desc = self.settings_desc_var.get().strip()
+        
+        if not title:
+            messagebox.showwarning("Input Warning", "System Title cannot be empty.")
+            self.settings_title_entry.focus_set()
+            return
+            
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE config SET value = ? WHERE key = 'system_title'", (title,))
+            cursor.execute("UPDATE config SET value = ? WHERE key = 'system_description'", (desc,))
+            conn.commit()
+            
+            # Update local memory
+            self.system_title = title
+            self.system_description = desc
+            
+            # Update banner labels in real-time
+            self.title_lbl.config(text=self.system_title)
+            self.subtitle_lbl.config(text=self.system_description)
+            
+            self.status_lbl.config(text="System configurations saved and updated successfully.")
+            messagebox.showinfo("Success", "System configuration saved successfully!")
+        except Exception as e:
+            messagebox.showerror("Save Error", f"Unable to save settings:\n{str(e)}")
+        finally:
+            conn.close()
+
     def create_footer_status(self):
         """Creates the bottom status bar with session information."""
         self.status_bar = tk.Frame(self.main_container, bg="#f1f5f9", height=28, bd=1, relief="solid")
@@ -946,7 +1296,7 @@ class BodegaStockOutApp:
         
         time_lbl = tk.Label(
             self.status_bar, 
-            text="Shortcuts: Ctrl+1/2/3 (Tabs) | Enter (Add) | Delete (Remove) | Ctrl+P (Print)", 
+            text="Shortcuts: Ctrl+1/2/3/4 (Tabs) | Enter (Add) | Delete (Remove) | Ctrl+P (Print)", 
             font=("Segoe UI", 8), 
             fg="#94a3b8", 
             bg="#f1f5f9", 
@@ -969,7 +1319,7 @@ class BodegaStockOutApp:
     # SQLite DATABASE PERSISTENCE LAYER
     # ========================================================
     def init_db(self):
-        """Creates relational schema for products and print transactions if not exists."""
+        """Creates relational schema for products, print transactions, and config settings if not exists."""
         conn = sqlite3.connect(self.db_path)
         try:
             cursor = conn.cursor()
@@ -992,13 +1342,41 @@ class BodegaStockOutApp:
                     items_json TEXT NOT NULL
                 )
             """)
+            
+            # Config table (Key-Value settings)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS config (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+            """)
+            cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES ('system_title', 'BODEGA STOCK-OUT SYSTEM')")
+            cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES ('system_description', 'Offline Session Dispatch & Paper Receipt Formatter')")
+            
             conn.commit()
+        finally:
+            conn.close()
+
+    def load_settings(self):
+        """Loads system configuration settings from SQLite config table."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT key, value FROM config")
+            rows = cursor.fetchall()
+            settings = dict(rows)
+            self.system_title = settings.get("system_title", "BODEGA STOCK-OUT SYSTEM")
+            self.system_description = settings.get("system_description", "Offline Session Dispatch & Paper Receipt Formatter")
+        except Exception:
+            self.system_title = "BODEGA STOCK-OUT SYSTEM"
+            self.system_description = "Offline Session Dispatch & Paper Receipt Formatter"
         finally:
             conn.close()
 
     def load_data(self):
         """Initializes SQLite databases, runs file wipe routines, and populates lists."""
         self.init_db()
+        self.load_settings()
         
         # Wipes old JSON file references completely to fulfill "remove all the data"
         for old_file in [self.products_file, self.history_file]:
@@ -1051,61 +1429,43 @@ class BodegaStockOutApp:
     # ========================================================
     # INTER-TAB DATA SYNCHRONIZATION HELPERS
     # ========================================================
-    def _debounce_quick_search(self, *args):
-        """Debounces quick search to avoid excessive redraws on each keystroke."""
-        if self._quick_search_debounce_id is not None:
-            self.root.after_cancel(self._quick_search_debounce_id)
-        self._quick_search_debounce_id = self.root.after(150, self.filter_quick_products)
-
     def refresh_quick_products(self):
         """Refreshes the sidebar product quick adder treeview."""
         self.filter_quick_products()
 
     def filter_quick_products(self, *args):
-        """Filters the quick-adder catalog sidebar in Dispatch view — optimized batch insert."""
+        """Filters the quick-adder catalog sidebar in Dispatch view."""
         search_term = self.quick_search_var.get().lower()
+        self.quick_tree.delete(*self.quick_tree.get_children())
+        
         matches = [prod for prod in self.products if search_term in prod.lower()]
         
-        # Clear existing rows
-        children = self.quick_tree.get_children()
-        if children:
-            self.quick_tree.delete(*children)
-        
-        # Batch-insert up to 150 matching rows
-        for idx, prod in enumerate(matches[:150]):
+        idx = 0
+        for prod in matches:
             tag = "even" if idx % 2 == 0 else "odd"
             self.quick_tree.insert("", tk.END, values=(prod,), tags=(tag,))
-
-    def _debounce_inv_search(self, *args):
-        """Debounces inventory search to avoid excessive redraws on each keystroke."""
-        if self._inv_search_debounce_id is not None:
-            self.root.after_cancel(self._inv_search_debounce_id)
-        self._inv_search_debounce_id = self.root.after(150, self.filter_inventory_list)
+            idx += 1
 
     def refresh_inventory_list(self):
         """Refreshes the catalog master manager treeview list."""
         self.filter_inventory_list()
 
     def filter_inventory_list(self, *args):
-        """Filters the master catalog manager treeview list — optimized batch insert."""
+        """Filters the master catalog manager treeview list."""
         search_term = self.inv_search_var.get().lower()
+        self.inv_tree.delete(*self.inv_tree.get_children())
+        
         matches = [prod for prod in self.products if search_term in prod.lower()]
         total_matches = len(matches)
         
-        # Clear existing rows
-        children = self.inv_tree.get_children()
-        if children:
-            self.inv_tree.delete(*children)
-        
-        # Batch-insert up to 150 matching rows
-        visible = 0
-        for idx, prod in enumerate(matches[:150]):
+        idx = 0
+        for prod in matches:
             tag = "even" if idx % 2 == 0 else "odd"
             self.inv_tree.insert("", tk.END, values=(prod,), tags=(tag,))
-            visible += 1
+            idx += 1
             
         if search_term:
-            self.catalog_count_var.set(f"Found {total_matches} (Showing {visible})")
+            self.catalog_count_var.set(f"Found {total_matches} (Showing {idx})")
         else:
             self.catalog_count_var.set(f"{len(self.products)} products")
 
@@ -1319,17 +1679,29 @@ class BodegaStockOutApp:
         self.qty_entry.focus_set()
 
     def update_item_count(self):
-        """Updates the total items count badge."""
-        items = self.tree.get_children()
-        total_items = len(items)
-        total_qty = 0
-        for item in items:
-            total_qty += int(self.tree.item(item, 'values')[1])
+        """Updates the total items count badge using complete in-memory dispatch_items."""
+        total_items = len(self.dispatch_items)
+        total_qty = sum(item["qty"] for item in self.dispatch_items)
             
         if total_items == 1:
             self.count_var.set(f"1 item (Total Qty: {total_qty})")
         else:
             self.count_var.set(f"{total_items} items (Total Qty: {total_qty})")
+
+    def refresh_dispatch_tree(self):
+        """Sorts dispatch_items alphabetically and filters them based on the search query."""
+        self.dispatch_items.sort(key=lambda x: x["desc"].lower())
+        self.tree.delete(*self.tree.get_children())
+        
+        search_query = self.batch_search_var.get().strip().lower()
+        idx = 0
+        for item in self.dispatch_items:
+            if not search_query or search_query in item["desc"].lower():
+                tag = "even" if idx % 2 == 0 else "odd"
+                self.tree.insert("", tk.END, values=(item["desc"], item["qty"]), tags=(tag,))
+                idx += 1
+                
+        self.update_item_count()
             
     def add_item(self):
         """Performs validation and adds a new item to the active session list."""
@@ -1369,13 +1741,28 @@ class BodegaStockOutApp:
             self.qty_entry.focus_set()
             return
             
-        # Insert item into the tree view
-        row_id = len(self.tree.get_children())
-        tag = "even" if row_id % 2 == 0 else "odd"
-        self.tree.insert("", tk.END, values=(desc, qty), tags=(tag,))
+        # Check duplicate item in the memory list (case-insensitive)
+        for item in self.dispatch_items:
+            if item["desc"].lower() == desc.lower():
+                messagebox.showwarning(
+                    "Duplicate Item",
+                    f"'{desc}' has already been added to the current batch."
+                )
+                self.item_name_entry.config(state=tk.NORMAL)
+                self.item_name_var.set("")
+                self.qty_var.set("")
+                for sel in self.quick_tree.selection():
+                    self.quick_tree.selection_remove(sel)
+                self.item_name_entry.focus_set()
+                return
+                
+        # Add to memory list
+        self.dispatch_items.append({"desc": desc, "qty": qty})
         
-        # Update badge and footer status
-        self.update_item_count()
+        # Refresh tree view (which sorts & filters it)
+        self.refresh_dispatch_tree()
+        
+        # Update status and reset inputs
         self.status_lbl.config(text=f"Added: '{desc}' x {qty} to current batch.")
         
         # Reset input fields — unlock name entry and clear catalog selection
@@ -1388,22 +1775,22 @@ class BodegaStockOutApp:
         self.item_name_entry.focus_set()
         
     def delete_selected_item(self):
-        """Removes the currently highlighted row from the Treeview."""
+        """Removes the currently highlighted row from the Treeview and memory list."""
         selected_item = self.tree.selection()
         if not selected_item:
             self.status_lbl.config(text="No item selected to remove.")
             return
             
         values = self.tree.item(selected_item[0], 'values')
-        self.tree.delete(selected_item[0])
+        desc = values[0]
         
-        # Adjust alternating colors for remaining items
-        for i, child_id in enumerate(self.tree.get_children()):
-            tag = "even" if i % 2 == 0 else "odd"
-            self.tree.item(child_id, tags=(tag,))
-            
-        self.update_item_count()
-        self.status_lbl.config(text=f"Removed: '{values[0]}' from session batch.")
+        # Remove from memory list
+        self.dispatch_items = [item for item in self.dispatch_items if item["desc"].lower() != desc.lower()]
+        
+        # Refresh tree
+        self.refresh_dispatch_tree()
+        
+        self.status_lbl.config(text=f"Removed: '{desc}' from session batch.")
         self.item_name_entry.focus_set()
 
     def on_tree_double_click(self, event):
@@ -1445,8 +1832,12 @@ class BodegaStockOutApp:
             )
             return
             
-        self.tree.item(item_id, values=(desc, new_qty))
-        self.update_item_count()
+        for item in self.dispatch_items:
+            if item["desc"].lower() == desc.lower():
+                item["qty"] = new_qty
+                break
+                
+        self.refresh_dispatch_tree()
         self.status_lbl.config(text=f"Updated: '{desc}' quantity changed to {new_qty}.")
 
     def on_tree_increment(self, event):
@@ -1471,15 +1862,15 @@ class BodegaStockOutApp:
         desc, qty = values[0], int(values[1])
         new_qty = qty + delta
         if new_qty <= 0:
-            self.tree.delete(item_id)
-            for i, child_id in enumerate(self.tree.get_children()):
-                tag = "even" if i % 2 == 0 else "odd"
-                self.tree.item(child_id, tags=(tag,))
-            self.update_item_count()
+            self.dispatch_items = [item for item in self.dispatch_items if item["desc"].lower() != desc.lower()]
+            self.refresh_dispatch_tree()
             self.status_lbl.config(text=f"Removed: '{desc}' (quantity reached 0).")
         else:
-            self.tree.item(item_id, values=(desc, new_qty))
-            self.update_item_count()
+            for item in self.dispatch_items:
+                if item["desc"].lower() == desc.lower():
+                    item["qty"] = new_qty
+                    break
+            self.refresh_dispatch_tree()
             self.status_lbl.config(text=f"Updated: '{desc}' quantity to {new_qty}.")
         
     def on_inv_tree_right_click(self, event):
@@ -1553,10 +1944,45 @@ class BodegaStockOutApp:
         self.refresh_quick_products()
         self.status_lbl.config(text=f"Renamed: '{old_name}' to '{new_name}'.")
         
+    def populate_test_items(self, count):
+        """Helper to quickly add mock items to active dispatch batch for printing/layout testing."""
+        self.dispatch_items = []
+        # Try to use names from catalog, fallback to 'Mock Product X'
+        for i in range(1, count + 1):
+            if i - 1 < len(self.products):
+                name = self.products[i - 1]
+            else:
+                name = f"Mock Product {i}"
+            qty = (i % 5) + 1
+            self.dispatch_items.append({"desc": name, "qty": qty})
+        self.refresh_dispatch_tree()
+        self.status_lbl.config(text=f"Loaded {count} mock test items for print testing.")
+        
+    def append_test_items(self, count):
+        """Appends count mock items to the active dispatch list without clearing existing ones."""
+        start_id = len(self.dispatch_items) + 1
+        for i in range(start_id, start_id + count):
+            if i - 1 < len(self.products):
+                name = self.products[i - 1]
+            else:
+                name = f"Mock Product {i}"
+            qty = (i % 5) + 1
+            
+            # Check duplicate to avoid warning popup
+            duplicate = False
+            for item in self.dispatch_items:
+                if item["desc"].lower() == name.lower():
+                    duplicate = True
+                    break
+            if not duplicate:
+                self.dispatch_items.append({"desc": name, "qty": qty})
+                
+        self.refresh_dispatch_tree()
+        self.status_lbl.config(text=f"Appended {count} mock test items to current batch.")
+        
     def clear_list(self):
         """Wipes the active session lists after user confirms."""
-        items = self.tree.get_children()
-        if not items:
+        if not self.dispatch_items:
             self.status_lbl.config(text="Session list is already empty.")
             return
             
@@ -1565,30 +1991,179 @@ class BodegaStockOutApp:
             "Are you sure you want to clear the entire list of items?\nThis action cannot be undone."
         )
         if confirm:
-            for item in items:
-                self.tree.delete(item)
-            self.update_item_count()
+            self.dispatch_items = []
+            self.refresh_dispatch_tree()
             self.status_lbl.config(text="Current batch wiped clean.")
             self.item_name_entry.focus_set()
             
-    def format_receipt_text(self, date_str, items_data, total_qty, file_timestamp):
+    def format_receipt_text(self, date_str, items_data, total_qty, ref_id, paper_size="Long",
+                            header_title=None, show_date=True, show_ref_id=True, font_size=10):
         """
-        Formats the current list into the simplified LIFECHECK PHARMA layout.
+        Formats the current list into the simplified LIFECHECK PHARMA layout with paging.
         """
-        lines = []
-        lines.append("LIFECHECK PHARMA")
-        lines.append(date_str)
-        lines.append("")
-        lines.append("")
-        lines.append(f"{'ITEMS':<19}QUANTITY")
+        def wrap_text(text, width):
+            if not text:
+                return [""]
+            words = text.split()
+            lines = []
+            current_line = []
+            current_length = 0
+            for word in words:
+                if len(word) > width:
+                    if current_line:
+                        lines.append(" ".join(current_line))
+                        current_line = []
+                        current_length = 0
+                    for i in range(0, len(word), width):
+                        lines.append(word[i:i+width])
+                    continue
+                if current_length + len(word) + (1 if current_line else 0) <= width:
+                    current_line.append(word)
+                    current_length += len(word) + (1 if current_line else 0)
+                else:
+                    lines.append(" ".join(current_line))
+                    current_line = [word]
+                    current_length = len(word)
+            if current_line:
+                lines.append(" ".join(current_line))
+            return lines if lines else [""]
+
+        # Dynamic lines capacity based on selected font size and Long paper height (936 pt)
+        line_height_points = font_size * 1.35
+        header_overhead_lines = 8  # Title, Date, Ref ID, spaces, and table headers
         
-        for desc, qty in items_data:
-            display_desc = desc
-            if len(display_desc) > 18:
-                display_desc = display_desc[:15] + "..."
-            lines.append(f"{display_desc:<19}{qty}")
+        # Non-last page capacity: safe zone is very small (only needs to clear page number at bottom)
+        # We reserve margins (60 pt) and small footer zone (2 lines of text = ~27 pt)
+        normal_lines_capacity = int((936.0 - (line_height_points * 2.0 + 80.0)) / line_height_points) - header_overhead_lines
+        
+        # Last page capacity: safe zone is larger (needs to reserve space for the signature block)
+        # We reserve margins (60 pt) and signatures zone (6 lines of signature + space = ~80 pt)
+        last_lines_capacity = int((936.0 - (line_height_points * 6.5 + 90.0)) / line_height_points) - header_overhead_lines
+        
+        # Paginate items dynamically based on wrapped sub-rows count
+        pages_data = []
+        current_items = list(items_data)
+        
+        while current_items:
+            # Check if all remaining items fit on the last page
+            mid_last = math.ceil(len(current_items) / 2)
+            left_last = current_items[:mid_last]
+            right_last = current_items[mid_last:]
+            rows_last = 0
+            if left_last or right_last:
+                left_rows = sum(len(wrap_text(item[0], 35)) for item in left_last)
+                right_rows = sum(len(wrap_text(item[0], 35)) for item in right_last)
+                rows_last = max(left_rows, right_rows)
+                
+            if rows_last <= last_lines_capacity:
+                pages_data.append((current_items, True))
+                current_items = []
+            else:
+                # Find the maximum items we can fit on this normal page
+                fit_count = 0
+                for count in range(1, len(current_items) + 1):
+                    test_items = current_items[:count]
+                    mid_test = math.ceil(count / 2)
+                    left_test = test_items[:mid_test]
+                    right_test = test_items[mid_test:]
+                    left_rows = sum(len(wrap_text(item[0], 35)) for item in left_test)
+                    right_rows = sum(len(wrap_text(item[0], 35)) for item in right_test)
+                    test_rows = max(left_rows, right_rows)
+                    if test_rows <= normal_lines_capacity:
+                        fit_count = count
+                    else:
+                        break
+                        
+                if fit_count == 0:
+                    fit_count = 1  # Always take at least one item
+                    
+                pages_data.append((current_items[:fit_count], False))
+                current_items = current_items[fit_count:]
+                
+        if not pages_data:
+            pages_data = [([], True)]
             
-        return "\n".join(lines)
+        total_pages = len(pages_data)
+        title_text = header_title if header_title is not None else self.system_title
+        pages_list = []
+        
+        for p, (page_items, is_last_page) in enumerate(pages_data):
+            page_num = p + 1
+            
+            # Divide items into left and right columns
+            mid = math.ceil(len(page_items) / 2)
+            left_col = page_items[:mid]
+            right_col = page_items[mid:]
+            
+            lines = []
+            lines.append(title_text.center(96))
+            if show_date:
+                lines.append(f"Date: {date_str}".center(96))
+            if show_ref_id:
+                lines.append(f"Ref ID: {ref_id}".center(96))
+            lines.append("")
+            
+            # Excel style grid table headers (QTY first, then ITEM) - 2 columns side-by-side with solid Unicode lines
+            # Each table: 45 chars, Gap: 6 chars. Total width = 45 + 6 + 45 = 96 characters
+            lines.append("┌─────┬─────────────────────────────────────┐      ┌─────┬─────────────────────────────────────┐")
+            lines.append("│ QTY │ ITEM                                │      │ QTY │ ITEM                                │")
+            lines.append("├─────┼─────────────────────────────────────┤      ├─────┼─────────────────────────────────────┤")
+            
+            max_rows = max(len(left_col), len(right_col))
+            for i in range(max_rows):
+                l_desc, l_qty = left_col[i] if i < len(left_col) else ("", None)
+                r_desc, r_qty = right_col[i] if i < len(right_col) else ("", None)
+                
+                l_wrapped = wrap_text(l_desc, 35) if l_qty is not None else []
+                r_wrapped = wrap_text(r_desc, 35) if r_qty is not None else []
+                
+                sub_rows = max(len(l_wrapped), len(r_wrapped))
+                for s in range(sub_rows):
+                    # Left cell line
+                    if l_qty is not None:
+                        l_line = l_wrapped[s] if s < len(l_wrapped) else ""
+                        l_qty_str = f" {l_qty:<3} " if s == 0 else "     "
+                        l_desc_str = f" {l_line:<35} "
+                        left_cell = f"│{l_qty_str}│{l_desc_str}│"
+                    else:
+                        left_cell = "                                             "
+                        
+                    # Right cell line
+                    if r_qty is not None:
+                        r_line = r_wrapped[s] if s < len(r_wrapped) else ""
+                        r_qty_str = f" {r_qty:<3} " if s == 0 else "     "
+                        r_desc_str = f" {r_line:<35} "
+                        right_cell = f"│{r_qty_str}│{r_desc_str}│"
+                    else:
+                        right_cell = "                                             "
+                        
+                    lines.append(f"{left_cell}      {right_cell}")
+                
+            lines.append("└─────┴─────────────────────────────────────┘      └─────┴─────────────────────────────────────┘")
+            
+            # Pad with empty lines to push the signatures and page number to the bottom
+            num_content_lines = len(lines)
+            footer_lines_count = 6 if is_last_page else 2
+            
+            # Total page lines possible (dynamic)
+            page_total_lines = (last_lines_capacity if is_last_page else normal_lines_capacity) + header_overhead_lines
+            
+            padding_needed = page_total_lines - num_content_lines - footer_lines_count
+            for _ in range(max(0, padding_needed)):
+                lines.append("")
+                
+            if is_last_page:
+                lines.append("Received by: ____________________   Checked by: ____________________".center(96))
+                lines.append("")
+                
+            lines.append(f"Page {page_num} of {total_pages}".center(96))
+            lines.append("")
+            # Metadata marker at end - stripped by PS before printing, used only for page count
+            lines.append(f"[PAGE:{page_num}OF:{total_pages}]")
+            
+            pages_list.append("\n".join(lines))
+            
+        return "\f".join(pages_list)
         
     def get_system_printers(self):
         """Fetches list of system printers and identifies the default printer."""
@@ -1651,13 +2226,17 @@ class BodegaStockOutApp:
                 
         return unique_printers, default_printer
 
-    def show_print_preview_dialog(self, filepath, receipt_content, on_success_callback):
-        """Displays a print preview dialog where the user reviews the text and selects a printer."""
+    def show_print_preview_dialog(self, filepath, date_str, items_data, total_qty, ref_id, on_success_callback):
+        """Displays a print preview dialog where the user reviews the text, selects a printer, and selects paper size."""
         preview_win = tk.Toplevel(self.root)
         preview_win.title("Print Review & Printer Selection")
-        preview_win.geometry("550x650")
+        preview_win.geometry("780x780")  # Wider to accommodate 2-column side-by-side grid layout
         preview_win.transient(self.root)
         preview_win.grab_set()
+        
+        # Define dropdown variables first so they can be referenced by the preview generator
+        paper_var = tk.StringVar(value="8.5'' x 13'' (Long)")
+        font_size_var = tk.StringVar(value="10")
         
         # Center dialog
         preview_win.update_idletasks()
@@ -1683,6 +2262,84 @@ class BodegaStockOutApp:
         )
         title_lbl.pack(fill=tk.X)
         
+        # ── Header Options Panel ──────────────────────────────────────────────
+        hdr_panel = tk.Frame(preview_win, bg="#e0f2fe", bd=1, relief="solid", padx=12, pady=8)
+        hdr_panel.pack(fill=tk.X, padx=15, pady=(0, 8))
+        
+        hdr_section_lbl = tk.Label(
+            hdr_panel,
+            text="Header Options",
+            font=("Segoe UI", 8, "bold"),
+            bg="#e0f2fe",
+            fg="#0369a1"
+        )
+        hdr_section_lbl.pack(anchor="w")
+        
+        # Title entry row
+        title_row = tk.Frame(hdr_panel, bg="#e0f2fe")
+        title_row.pack(fill=tk.X, pady=(4, 0))
+        
+        tk.Label(
+            title_row,
+            text="Title:",
+            font=("Segoe UI", 9, "bold"),
+            bg="#e0f2fe",
+            fg="#0c4a6e",
+            width=7,
+            anchor="w"
+        ).pack(side=tk.LEFT)
+        
+        header_title_var = tk.StringVar(value=self.system_title)
+        title_entry = tk.Entry(
+            title_row,
+            textvariable=header_title_var,
+            font=("Segoe UI", 9),
+            bg="#ffffff",
+            fg="#0f172a",
+            relief="solid",
+            bd=1
+        )
+        title_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        # Toggles row
+        toggle_row = tk.Frame(hdr_panel, bg="#e0f2fe")
+        toggle_row.pack(fill=tk.X, pady=(6, 0))
+        
+        show_date_var = tk.BooleanVar(value=True)
+        show_refid_var = tk.BooleanVar(value=True)
+        
+        date_chk = tk.Checkbutton(
+            toggle_row,
+            text="Show Date",
+            variable=show_date_var,
+            font=("Segoe UI", 9),
+            bg="#e0f2fe",
+            fg="#0c4a6e",
+            activebackground="#e0f2fe",
+            selectcolor="#ffffff",
+            cursor="hand2"
+        )
+        date_chk.pack(side=tk.LEFT, padx=(0, 16))
+        
+        refid_chk = tk.Checkbutton(
+            toggle_row,
+            text="Show Ref ID",
+            variable=show_refid_var,
+            font=("Segoe UI", 9),
+            bg="#e0f2fe",
+            fg="#0c4a6e",
+            activebackground="#e0f2fe",
+            selectcolor="#ffffff",
+            cursor="hand2"
+        )
+        refid_chk.pack(side=tk.LEFT)
+        # ─────────────────────────────────────────────────────────────────────
+        
+        # Create control panel frame first at the bottom so it allocates its height first
+        ctrl_frame = tk.Frame(preview_win, bg="#ffffff", bd=1, relief="solid", padx=15, pady=15)
+        ctrl_frame.pack(fill=tk.X, side=tk.BOTTOM)
+        
+        # Create text preview frame that occupies the remaining space in the middle
         text_frame = tk.Frame(preview_win, bg="#cbd5e1", bd=1, relief="solid")
         text_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=(0, 15))
         
@@ -1697,11 +2354,132 @@ class BodegaStockOutApp:
             pady=12
         )
         txt_box.pack(fill=tk.BOTH, expand=True)
-        txt_box.insert(tk.END, receipt_content)
+        # Helper to strip metadata lines for cleaner preview
+        def get_display_content(text):
+            pages = text.split("\x0c")
+            clean_pages = []
+            for p in pages:
+                lines = p.split("\n")
+                clean_lines = [l for l in lines if not (l.startswith("[PAGE:") and l.endswith("]"))]
+                clean_pages.append("\n".join(clean_lines))
+            return "\n\n--- PAGE BREAK ---\n\n".join(clean_pages)
+
+        # Default load is 8.5'' x 13'' (Long) receipt format
+        try:
+            default_font_size = int(font_size_var.get())
+        except ValueError:
+            default_font_size = 10
+        receipt_content = self.format_receipt_text(
+            date_str, items_data, total_qty, ref_id, "Long",
+            header_title=header_title_var.get(),
+            show_date=show_date_var.get(),
+            show_ref_id=show_refid_var.get(),
+            font_size=default_font_size
+        )
+        txt_box.insert(tk.END, get_display_content(receipt_content))
         txt_box.config(state=tk.DISABLED)
         
-        ctrl_frame = tk.Frame(preview_win, bg="#ffffff", bd=1, relief="solid", padx=15, pady=15)
-        ctrl_frame.pack(fill=tk.X, side=tk.BOTTOM)
+        # Options Row: Paper Size (left) + Font Size (right)
+        options_row = tk.Frame(ctrl_frame, bg="#ffffff")
+        options_row.pack(fill=tk.X, pady=(0, 12))
+        
+        # -- Paper Size Column --
+        paper_col = tk.Frame(options_row, bg="#ffffff")
+        paper_col.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
+        
+        paper_lbl = tk.Label(
+            paper_col,
+            text="Paper Size:",
+            font=("Segoe UI", 9, "bold"),
+            bg="#ffffff",
+            fg="#475569"
+        )
+        paper_lbl.pack(anchor="w", pady=(0, 2))
+        
+        paper_cb = ttk.Combobox(
+            paper_col,
+            textvariable=paper_var,
+            values=["8.5'' x 13'' (Long)"],
+            state="readonly",
+            font=("Segoe UI", 10)
+        )
+        paper_cb.pack(fill=tk.X)
+        
+        # -- Font Size Column --
+        font_col = tk.Frame(options_row, bg="#ffffff")
+        font_col.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
+        
+        font_lbl = tk.Label(
+            font_col,
+            text="Font Size (Print):",
+            font=("Segoe UI", 9, "bold"),
+            bg="#ffffff",
+            fg="#475569"
+        )
+        font_lbl.pack(anchor="w", pady=(0, 2))
+        
+        font_size_cb = ttk.Combobox(
+            font_col,
+            textvariable=font_size_var,
+            values=["7", "8", "9", "10", "11", "12", "14", "16", "18", "20"],
+            state="readonly",
+            font=("Segoe UI", 10)
+        )
+        font_size_cb.pack(fill=tk.X)
+        
+        def refresh_preview(*args):
+            """Regenerate the preview whenever any header option or paper size changes."""
+            selected_size = "Long"
+            try:
+                current_font_size = int(font_size_var.get())
+            except ValueError:
+                current_font_size = 10
+            new_content = self.format_receipt_text(
+                date_str=date_str,
+                items_data=items_data,
+                total_qty=total_qty,
+                ref_id=ref_id,
+                paper_size=selected_size,
+                header_title=header_title_var.get(),
+                show_date=show_date_var.get(),
+                show_ref_id=show_refid_var.get(),
+                font_size=current_font_size
+            )
+            txt_box.config(state=tk.NORMAL)
+            txt_box.delete("1.0", tk.END)
+            txt_box.insert(tk.END, get_display_content(new_content))
+            txt_box.config(state=tk.DISABLED)
+            
+            # Save updated content to file
+            try:
+                with open(filepath, "w", encoding="utf-8") as f:
+                    f.write(new_content)
+            except Exception:
+                pass
+                
+            # Update DB history record
+            conn = sqlite3.connect(self.db_path)
+            try:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE history SET receipt_text = ? WHERE ref_id = ?",
+                    (new_content, ref_id)
+                )
+                conn.commit()
+            except Exception:
+                pass
+            finally:
+                conn.close()
+                
+            if self.active_tab == "history":
+                self.load_history_from_db()
+
+        # Wire all header controls to live-refresh the preview
+        paper_cb.bind("<<ComboboxSelected>>", refresh_preview)
+        font_size_cb.bind("<<ComboboxSelected>>", refresh_preview)
+        show_date_var.trace_add("write", refresh_preview)
+        show_refid_var.trace_add("write", refresh_preview)
+        title_entry.bind("<KeyRelease>", refresh_preview)
         
         printer_lbl = tk.Label(
             ctrl_frame,
@@ -1752,22 +2530,132 @@ class BodegaStockOutApp:
         
         def handle_print():
             selected_printer = printer_var.get()
+            selected_size = "Long" if paper_var.get().startswith("Long") else "A4"
+            try:
+                chosen_font_size = int(font_size_var.get())
+            except ValueError:
+                chosen_font_size = 10
             print_btn.config(state="disabled", text="Printing...")
             cancel_btn.config(state="disabled")
             
             def run_print():
                 try:
-                    if selected_printer == "Default System Printer":
-                        if sys.platform == "win32":
-                            os.startfile(filepath, "print")
-                        else:
-                            subprocess.run(["lp", filepath], check=True)
-                    else:
-                        if sys.platform == "win32":
-                            escaped_path = filepath.replace("'", "''")
+                    if sys.platform == "win32":
+                        escaped_path = filepath.replace("'", "''")
+                        printer_setting = ""
+                        if selected_printer != "Default System Printer":
                             escaped_printer = selected_printer.replace("'", "''")
-                            cmd = ["powershell", "-Command", f"Get-Content -LiteralPath '{escaped_path}' -Raw | Out-Printer -Name '{escaped_printer}'"]
-                            subprocess.run(cmd, check=True)
+                            printer_setting = f"$doc.PrinterSettings.PrinterName = '{escaped_printer}'"
+                        
+                        # Try setting standard Folio size (8.5'' x 13'') if supported by the driver, otherwise use custom size
+                        paper_size_setting = """
+$paper = $doc.PrinterSettings.PaperSizes | Where-Object { $_.Kind -eq [System.Drawing.Printing.PaperKind]::Folio }
+if (-not $paper) {
+    $paper = New-Object System.Drawing.Printing.PaperSize("Custom 8.5x13", 850, 1300)
+}
+$doc.DefaultPageSettings.PaperSize = $paper
+"""
+                        
+                        ps_script = f"""
+Add-Type -AssemblyName System.Drawing
+$doc = New-Object System.Drawing.Printing.PrintDocument
+{printer_setting}
+{paper_size_setting}
+$doc.DefaultPageSettings.Margins.Top = 30
+$doc.DefaultPageSettings.Margins.Bottom = 70
+$doc.DefaultPageSettings.Margins.Left = 30
+$doc.DefaultPageSettings.Margins.Right = 30
+$fontSize = {chosen_font_size}
+$font = New-Object System.Drawing.Font("Consolas", $fontSize)
+$allText = [System.IO.File]::ReadAllText('{escaped_path}')
+$pages = $allText -split [char]12
+$totalPages = $pages.Count
+$script:pageIndex = 0
+$doc.add_PrintPage({{
+    param($sender, $e)
+    $g  = $e.Graphics
+    $pb = $e.PageBounds
+    # Margin bounds matching margins (30 top/left/right, 70 bottom)
+    $topY    = 30.0
+    $bottomY = [float]($pb.Height - 70)
+    $leftX   = 30.0
+    $rightX  = [float]($pb.Width  - 30)
+    # Measure font height to calculate exact spacing for signature block
+    $charHeight = ($g.MeasureString("A", $font)).Height
+    # Reserve safe bottom zone for page number and signatures (4 lines of height to prevent overlap)
+    $bottomZone = ($charHeight * 4.0) + 20
+    # Strip the footer lines and metadata from body text to avoid double printing
+    $rawText    = $pages[$script:pageIndex]
+    $pageLines  = $rawText -split "`r?`n"
+    $bodyLines  = $pageLines | Where-Object {{
+        $_ -notmatch '^\[PAGE:\d+OF:\d+\]$' -and
+        $_ -notmatch '^\s*Received by: .* Checked by: .*\s*$' -and
+        $_ -notmatch '^\s*Page \d+ of \d+\s*$'
+    }}
+    
+    # Split header lines and table lines dynamically based on border markers
+    $headerLines = @()
+    $tableLines  = @()
+    $inTable     = $false
+    foreach ($line in $bodyLines) {{
+        if ($line.StartsWith("+") -or $line.StartsWith("|") -or $line.StartsWith("┌") -or $line.StartsWith("│") -or $line.StartsWith("├") -or $line.StartsWith("└")) {{
+            $inTable = $true
+        }}
+        if ($inTable) {{
+            $tableLines += $line
+        }} else {{
+            if ($line.Trim() -ne "") {{
+                $headerLines += $line
+            }}
+        }}
+    }}
+    $cleanHeaderLines = $headerLines | ForEach-Object {{ $_.Trim() }}
+    $headerText = $cleanHeaderLines -join "`n"
+    $tableText  = $tableLines -join "`n"
+    
+    # Draw header text centered to the entire paper page width (15pt Bold)
+    $headerFont = New-Object System.Drawing.Font("Consolas", 15, [System.Drawing.FontStyle]::Bold)
+    $headerCharHeight = ($g.MeasureString("A", $headerFont)).Height
+    $headerRect = New-Object System.Drawing.RectangleF(0, $topY, $pb.Width, ($headerCharHeight * 3.5))
+    $sfHeader = New-Object System.Drawing.StringFormat
+    $sfHeader.Alignment = [System.Drawing.StringAlignment]::Center
+    $g.DrawString($headerText, $headerFont, [System.Drawing.Brushes]::Black, $headerRect, $sfHeader)
+    
+    # Align the table starting below the bold header lines, left-aligned close to the side
+    $x = $leftX
+    $tableY = $topY + ($headerCharHeight * 3.5) + 10
+    $tableRect = New-Object System.Drawing.RectangleF($x, $tableY, ($rightX - $x), ($bottomY - $bottomZone - $tableY))
+    $sfTable = New-Object System.Drawing.StringFormat
+    $sfTable.Trimming = [System.Drawing.StringTrimming]::None
+    $g.DrawString($tableText, $font, [System.Drawing.Brushes]::Black, $tableRect, $sfTable)
+    
+    # Pinned page number centered at the very bottom, using a smaller font
+    $pageLabel = "Page $($script:pageIndex + 1) of $totalPages"
+    $smallFont = New-Object System.Drawing.Font("Consolas", [float]($fontSize * 0.8))
+    $pageSize  = $g.MeasureString($pageLabel, $smallFont)
+    $pageX     = ($pb.Width - $pageSize.Width) / 2
+    $pageY     = $pb.Height - 35
+    $g.DrawString($pageLabel, $smallFont, [System.Drawing.Brushes]::Black, $pageX, $pageY)
+    
+    # Align signatures (moved slightly higher and made larger)
+    $sigFont   = New-Object System.Drawing.Font("Consolas", [float]($fontSize * 1.15))
+    $sigY      = $bottomY - $charHeight - 35
+    $g.DrawString("Received by: ____________________", $sigFont, [System.Drawing.Brushes]::Black, $leftX, $sigY)
+    
+    $checkedStr  = "Checked by: ____________________"
+    $checkedSize = $g.MeasureString($checkedStr, $sigFont)
+    $g.DrawString($checkedStr, $sigFont, [System.Drawing.Brushes]::Black, ($rightX - $checkedSize.Width), $sigY)
+    
+    $script:pageIndex++
+    $e.HasMorePages = ($script:pageIndex -lt $totalPages)
+}})
+$doc.Print()
+"""
+                        cmd = ["powershell", "-Command", ps_script]
+                        subprocess.run(cmd, check=True)
+                    else:
+                        if selected_printer == "Default System Printer":
+                            subprocess.run(["lp", filepath], check=True)
                         else:
                             subprocess.run(["lp", "-d", selected_printer, filepath], check=True)
                     
@@ -1832,8 +2720,7 @@ class BodegaStockOutApp:
 
     def print_report(self):
         """Generates, saves locally as .txt, triggers printer review & selection modal, and logs to persistent SQLite history."""
-        items = self.tree.get_children()
-        if not items:
+        if not self.dispatch_items:
             messagebox.showerror(
                 "Print Error", 
                 "There are no items in the session dispatch table.\nPlease add items before printing."
@@ -1844,10 +2731,9 @@ class BodegaStockOutApp:
         # Compile lists
         items_data = []
         total_qty = 0
-        for item in items:
-            vals = self.tree.item(item, 'values')
-            desc = vals[0]
-            qty = int(vals[1])
+        for item in self.dispatch_items:
+            desc = item["desc"]
+            qty = int(item["qty"])
             items_data.append((desc, qty))
             total_qty += qty
             
@@ -1856,12 +2742,23 @@ class BodegaStockOutApp:
         timestamp_file = now.strftime("%Y%m%d_%H%M%S")
         timestamp_display = now.strftime("%Y-%m-%d %H:%M:%S")
         
+        # Generate sequential LIFECHECK ref_id
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM history")
+            count = cursor.fetchone()[0] + 1
+            date_part = now.strftime("%Y%m%d")
+            ref_id = f"LIFECHECK_{count:04d}_{date_part}"
+        finally:
+            conn.close()
+            
         # Format receipt contents
         receipt_content = self.format_receipt_text(
             date_str=timestamp_display,
             items_data=items_data,
             total_qty=total_qty,
-            file_timestamp=timestamp_file
+            ref_id=ref_id
         )
         
         # Filename creation
@@ -1880,11 +2777,6 @@ class BodegaStockOutApp:
             conn = sqlite3.connect(self.db_path)
             try:
                 cursor = conn.cursor()
-                # Generate sequential LIFECHECK ref_id
-                cursor.execute("SELECT COUNT(*) FROM history")
-                count = cursor.fetchone()[0] + 1
-                date_part = now.strftime("%Y%m%d")
-                ref_id = f"LIFECHECK_{count:04d}_{date_part}"
                 cursor.execute(
                     "INSERT OR REPLACE INTO history (ref_id, timestamp, total_qty, receipt_text, items_json) VALUES (?, ?, ?, ?, ?)",
                     (ref_id, timestamp_display, total_qty, receipt_content, items_json_str)
@@ -1907,12 +2799,11 @@ class BodegaStockOutApp:
                 )
                 
                 # Wipe list after successful report completion
-                for item in items:
-                    self.tree.delete(item)
-                self.update_item_count()
+                self.dispatch_items = []
+                self.refresh_dispatch_tree()
                 self.status_lbl.config(text=f"Session report printed & logged in history. Cleared active batch.")
                 
-            self.show_print_preview_dialog(filepath, receipt_content, on_success)
+            self.show_print_preview_dialog(filepath, timestamp_display, items_data, total_qty, ref_id, on_success)
             
         except Exception as e:
             messagebox.showerror(
@@ -2020,7 +2911,7 @@ class BodegaStockOutApp:
         if record:
             self.hist_text.config(state=tk.NORMAL)
             self.hist_text.delete("1.0", tk.END)
-            self.hist_text.insert(tk.END, record["receipt_text"])
+            self.hist_text.insert(tk.END, record["receipt_text"].replace("\x0c", "\n\n--- PAGE BREAK ---\n\n"))
             self.hist_text.config(state=tk.DISABLED)
             
             # Enable actions
@@ -2072,6 +2963,10 @@ class BodegaStockOutApp:
             
         receipt_content = record["receipt_text"]
         
+        items_data = [(item["name"], item["qty"]) for item in record["items"]]
+        date_str = record["timestamp"]
+        total_qty = record["total_qty"]
+        
         # Convert ref_id into a safe filename
         safe_name = ref_id.replace('/', '_').replace('\\', '_')
         filename = f"StockOut_{safe_name}.txt"
@@ -2091,7 +2986,7 @@ class BodegaStockOutApp:
                     f"Saved print text: {filename}"
                 )
             
-            self.show_print_preview_dialog(filepath, receipt_content, on_success)
+            self.show_print_preview_dialog(filepath, date_str, items_data, total_qty, ref_id, on_success)
             
         except Exception as e:
             messagebox.showerror(
